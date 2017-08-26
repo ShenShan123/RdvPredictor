@@ -3,11 +3,8 @@
 
 #include <iostream>
 #include <fstream>
-#include <unordered_set>
-#include <vector>
 #include <map>
 #include <random>
-#include <unordered_map>
 #include <assert.h>
 #include <stdlib.h> 
 #include <iomanip>
@@ -31,9 +28,7 @@ KNOB<UINT64> KnobIntervalSize(KNOB_MODE_WRITEONCE, "pintool", "i", "10000000", "
 //KNOB<UINT64> KnobSampleRate(KNOB_MODE_WRITEONCE, "pintool", "s", "10000", "the sample rate");
 KNOB<UINT32> KnobRdvThreshold(KNOB_MODE_WRITEONCE, "pintool", "t", "5", "the maximum normalized manhattan distance of two RD vector");
 KNOB<UINT32> KnobPhaseTableSize(KNOB_MODE_WRITEONCE, "pintool", "p", "10000", "phase table size");
-KNOB<UINT32> KnobHistoryLength(KNOB_MODE_WRITEONCE, "pintool", "l", "10", "history register length");
-KNOB<UINT32> KnobHistoryTableSize(KNOB_MODE_WRITEONCE, "pintool", "s", "65536", "history signature table size");
-
+KNOB<UINT32> KnobHistoryTableSize(KNOB_MODE_WRITEONCE, "pintool", "s", "1024", "history signature table size");
 
 #define LOG2
 //#define SAMPLE
@@ -114,40 +109,47 @@ public:
 
 class PhaseTable
 {
-private:
-	template<class B>
-	class Entry : public Histogram<B>
+public:
+	class Entry : public Histogram<>
 	{
 	private:
 		friend class PhaseTable;
 		uint32_t id;
 		uint32_t occur;
+		uint16_t reuse;
 	
 	public:
-		Entry(const Histogram<B> & rdv, const uint32_t _id);
+		Entry(const Histogram<> & rdv, const uint32_t _id);
 	
 		~Entry() {};
 
-		double manhattanDist(const Histogram<B> & rhs);
+		double manhattanDist(const Histogram<> & rhs);
+
+		void clearReuse();
+
+		const uint32_t getId() const { return id; }
+
+		const uint32_t getReuse() const { return reuse; }
 	};
 
+private:
 	/* list for LRU replacement policy */
-	std::list<Entry<int64_t> *> pt;
+	std::list<Entry *> pt;
 	double threshold;
-	uint32_t index;
+	uint32_t newId;
 	uint32_t ptSize;
 
 public:
-	PhaseTable() : threshold(0.0), index(0), ptSize(0) {};
+	PhaseTable() : threshold(0.0), newId(0), ptSize(0) {};
 
 	~PhaseTable();
 
-	void init(double t, uint32_t s);
+	void init(double t, uint32_t s, uint32_t startId);
 
 	/* do LRU replacement */
-	void lruRepl(Entry <int64_t> * ent, std::list<Entry<int64_t> *>::iterator & p);
+	void lruRepl(Entry * ent, std::list<Entry *>::iterator & p);
 
-	uint32_t find(const Histogram<> & rdv);
+	PhaseTable::Entry * find(const Histogram<> & rdv);
 
 	const int size() const { return pt.size(); }
 };
@@ -155,25 +157,28 @@ public:
 class Predictor
 {
 private:
-	/* history registers */
-	std::deque<uint32_t> histRegs;
-	uint32_t histLength;
 	/* history signature table */
-	uint32_t * hst;
+	uint32_t ** hst;
 	uint32_t hstSize;
-	uint64_t index;
+
+	/* history registers */
+	uint32_t histReg;
+	uint32_t histReuse;
+	//std::deque<uint32_t> lastIds;
+
+	/* prediction out come */
 	uint32_t predOutCome;
 
 public:
 	uint32_t misPredicts;
 
-	Predictor() : histLength(0), hstSize(0), index(0), predOutCome(0), misPredicts(0) {};
+	Predictor() : hstSize(0), histReg(0), histReuse(0), predOutCome(0), misPredicts(0) {};
 
-	~Predictor() { delete [] hst; }
+	~Predictor();
 
-	void init(uint32_t l, uint32_t s);
+	void init(uint32_t s);
 
-	uint32_t predict(uint32_t id);
+	uint32_t predict(PhaseTable::Entry * ent);
 };
 
 VOID PIN_FAST_ANALYSIS_CALL
@@ -186,7 +191,7 @@ RecordMemRefs(ADDRINT ea);
 VOID Trace(TRACE trace, VOID *v);
 
 /* output the results, and free the poiters */
-VOID Fini(INT32 code, VOID *v);
+VOID Fini(INT32 code, VOID *v = NULL);
 
 /* ===================================================================== */
 /* Print Help Message                                                    */

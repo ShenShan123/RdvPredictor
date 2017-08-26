@@ -137,20 +137,18 @@ void ReuseDist::calReuseDist(uint64_t addr, Histogram<> & rdv)
     value = index;
 }
 
-template<class B>
-PhaseTable::Entry<B>::Entry(const Histogram<B> & rdv, const uint32_t _id) : Histogram<B>(rdv), id(_id), occur(1)
+PhaseTable::Entry::Entry(const Histogram<> & rdv, const uint32_t _id) : Histogram<>(rdv), id(_id), occur(1), reuse(0)
 {
     //for (int i = 0; i < this->_size; ++i)
       //  id ^= this->bins[i];
 }
 
-template<class B>
-double PhaseTable::Entry<B>::manhattanDist(const Histogram<B> & rhs)
+double PhaseTable::Entry::manhattanDist(const Histogram<> & rhs)
 {
     assert(this->_size == rhs.size());
 
-    B dist = 0;
-    for (uint32_t i = 0; i < this->_size; ++i)
+    int64_t dist = 0;
+    for (int i = 0; i < this->_size; ++i)
         /* abstract the sum of the similar rdvs in the entry 
            with the rhs(current phase rdv), this is 
            an approximation to average manhattan distance
@@ -160,29 +158,33 @@ double PhaseTable::Entry<B>::manhattanDist(const Histogram<B> & rhs)
     return (double)dist / this->samples;
 }
 
+void PhaseTable::Entry::clearReuse() { reuse = 0; }
+
 PhaseTable::~PhaseTable() 
 {
     for (auto it = pt.begin(); it != pt.end(); ++it)
         delete *it;
 }
 
-void PhaseTable::init(double t, uint32_t s)
+void PhaseTable::init(double t, uint32_t s, uint32_t startId)
 {
     threshold = t;
     ptSize = s;
+    //newId = startId / 2;
 }
 
-void PhaseTable::lruRepl(Entry<int64_t> * ent, std::list<Entry<int64_t> *>::iterator & p)
+void PhaseTable::lruRepl(Entry * ent, std::list<Entry *>::iterator & p)
 {
     /* move the most recently access entry to the head of list */
     pt.push_front(ent);
-
+    /* erase the old position */
     if (p != pt.end())
         pt.erase(p);
     /* this is a new entry */
     /* if the phase table is full, delete the last entry */
     else if (pt.size() > ptSize) {
-        std::cout << "full phase table!! pop " << pt.back()->id << std::endl;
+        std::cout << "full phase table!! pop " << (*(--p))->id << std::endl;
+        /* free the pointer, Entry *, and pop the last element */
         delete *p;
         pt.pop_back();
     }
@@ -190,17 +192,28 @@ void PhaseTable::lruRepl(Entry<int64_t> * ent, std::list<Entry<int64_t> *>::iter
     assert(pt.size() <= ptSize);
 }
 
-uint32_t PhaseTable::find(const Histogram<> & rdv)
+template<class I>
+uint32_t genRandNum(I range)
 {
-    ++index;
+    // construct a trivial random generator engine from a time-based seed:
+    std::random_device seed;
+    static std::mt19937 engine(seed());
+    static std::uniform_int_distribution<I> unif(1, range);
+    return unif(engine);
+}
+
+PhaseTable::Entry * PhaseTable::find(const Histogram<> & rdv)
+{
     double distMin = DBL_MAX;
-    Entry<int64_t> * entryPtr = nullptr;
+    Entry * entryPtr = nullptr;
     auto pos = pt.end();
 
     /* search for a similar RDV of a phase */
     for (auto it = pt.begin(); it != pt.end(); ++it) {
-        double dist = (*it)->manhattanDist(rdv);
+        /* update the reuse conter */
+        ++(*it)->reuse;
 
+        double dist = (*it)->manhattanDist(rdv);
         if (dist < distMin) {
             distMin = dist;
             entryPtr = *it;
@@ -218,55 +231,70 @@ uint32_t PhaseTable::find(const Histogram<> & rdv)
         std::cout << "found a similar phase: id " << entryPtr->id << std::endl;
         
         lruRepl(entryPtr, pos);
-        return entryPtr->id;
+        return entryPtr;
     }
+    /* creat a new phase entry and do LRU replacement policy */
     else {
+        //++newId;
         pos = pt.end();
-        entryPtr = new Entry<int64_t>(rdv, pt.size() + 1);
+        entryPtr = new Entry(rdv, genRandNum(ptSize * 8));
         std::cout << "creat a new phase: id " << entryPtr->id << std::endl;
         
         lruRepl(entryPtr, pos);
-        return entryPtr->id;
+        return entryPtr;
     }
 }
 
-void Predictor::init(uint32_t l, uint32_t s)
+Predictor::~Predictor()
 {
-    histLength = l;
-    histRegs.resize(histLength, 0);
-    hstSize = s;
-    hst = new uint32_t[hstSize];
-
     for (uint32_t i = 0; i < hstSize; ++i)
-        hst[i] = 0;
+        delete [] hst[i];
+
+    delete [] hst;
 }
 
-uint32_t Predictor::predict(uint32_t id)
+void Predictor::init(uint32_t s)
 {
+    hstSize = s;
+    hst = new uint32_t * [hstSize];
+    for (uint32_t i = 0; i < hstSize; ++i)
+        hst[i] = new uint32_t [hstSize];
+
+    for (uint32_t i = 0; i < hstSize; ++i)
+        for (uint32_t j = 0; j < hstSize; ++j)
+            hst[i][j] = 0;
+}
+
+uint32_t Predictor::predict(PhaseTable::Entry * ent)
+{
+    uint32_t id = ent->getId();
+    
+    //lastIds.push_back(id);
+    //if (lastIds.size() > 2)
+      //  lastIds.pop_front();
+    
     /* update the history table */
-    hst[index & (hstSize - 1)] = id;
+    //hst[histReg & (hstSize - 1)][histReuse & (hstSize - 1)] = id;
+    hst[histReg & (hstSize - 1)][0] = id;
     misPredicts += id != predOutCome;
 
     /* update history registers */
-    histRegs.push_front(id);
-    if (histRegs.size() > histLength)
-        histRegs.pop_back();
+    //histReg = lastIds[0] ^ lastIds[1];
+    histReuse = ent->getReuse();
+    histReg = id ^ histReuse;
 
-    index = 0;
-    /* recompute index */
-    for (uint8_t i = 0; i < histLength; ++i)
-        index ^= (uint64_t)histRegs[i] << i;
+    /* clear the reuse counter of this entry */
+    ent->clearReuse();
+    //std::cout << "histReg index " << (histReg & (hstSize - 1)) << std::endl;
 
-    std::cout << "index is " << (index & (hstSize - 1)) << std::endl;
-
-    assert((index & (hstSize - 1)) <= hstSize);
     /* do prediction from history table */
-    predOutCome = hst[index & (hstSize - 1)];
+    //predOutCome = hst[histReg & (hstSize - 1)][histReuse & (hstSize - 1)];
+    predOutCome = hst[histReg & (hstSize - 1)][0];
     
     /* if the history table entry is empty, then predict this phase as the next */
     if (!predOutCome) {
         std::cout << "no entry matched!\n";
-        predOutCome = id;
+        predOutCome = histReg;
     }
     
     return predOutCome;
@@ -285,11 +313,11 @@ RecordMemRefs(ADDRINT ea)
         InterCount -= IntervalSize;
         ++NumIntervals;
 
-        uint32_t id = phaseTable.find(currRDD);
+        PhaseTable::Entry * entry = phaseTable.find(currRDD);
         /* print the current phase index */
-        fout << id << "\n";
+        //fout << id << "\n";
 
-        uint32_t predId = predictor.predict(id);
+        uint32_t predId = predictor.predict(entry);
         std::cout << "predicted phase id is: " << predId << std::endl;
         //std::cout << "mis-predictions " << predictor.misPredicts << std::endl;
 
@@ -299,10 +327,10 @@ RecordMemRefs(ADDRINT ea)
     }
 
     /* if we got a maximum memory references, just exit this program */
-    //if (NumMemAccs >= 50000000000) {
-        //Fini(0);
-        //exit(0);
-    //}
+    if (NumIntervals >= 5000) {
+        Fini(0);
+        exit(0);
+    }
 }
 
 /*
@@ -346,7 +374,9 @@ VOID Fini(INT32 code, VOID *v)
     std::cout << "miss-prediction rate " << (double)predictor.misPredicts / NumIntervals << std::endl;
     ++NumIntervals;
 
-    fout.close();
+    fout << "miss-prediction rate: " << (double)predictor.misPredicts / NumIntervals << std::endl;
+    fout << "\nthreshold " << (double)KnobRdvThreshold.Value() / 100 << "\nphase table size " \
+    << KnobPhaseTableSize.Value() << "\nhistory table size " << KnobHistoryTableSize.Value() << std::endl;
 
     std::cout << "phase table size " << phaseTable.size() << std::endl;
     std::cout << "Total memory accesses " << NumMemAccs << std::endl;
@@ -384,14 +414,13 @@ int main(int argc, char *argv[])
     /* current phase RDD */
     currRDD.setSize(DOLOG(Truncation) + 1);
     /* init the phase table with  threshold = 5%  and table size */
-    phaseTable.init((double)KnobRdvThreshold.Value() / 100, KnobPhaseTableSize.Value());
+    phaseTable.init((double)KnobRdvThreshold.Value() / 100, KnobPhaseTableSize.Value(), KnobHistoryTableSize.Value());
     /* init phase predictor, set the length of history registers and the size of history table */
-    predictor.init(KnobHistoryLength.Value(), KnobHistoryTableSize.Value());
+    predictor.init(KnobHistoryTableSize.Value());
 
     std::cout << "truncation distance " << Truncation << "\nRDV dimension " << currRDD.size() << "\nout file " << KnobOutputFile.Value().c_str() \
     << "\ninterval size " << IntervalSize << "\nPhase threshold " << (double)KnobRdvThreshold.Value() / 100 \
-    << "\nphase table size " << KnobPhaseTableSize.Value() << "\nhistory register length " << KnobHistoryLength.Value() << "\nhistory table size " \
-    << KnobHistoryTableSize.Value() << std::endl;
+    << "\nphase table size " << KnobPhaseTableSize.Value() << "\nhistory table size " << KnobHistoryTableSize.Value() << std::endl;
 
     // add an instrumentation function
     TRACE_AddInstrumentFunction(Trace, 0);

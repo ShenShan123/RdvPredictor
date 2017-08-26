@@ -1,0 +1,5 @@
+miss-prediction rate: 0.757642
+
+threshold 0.09
+phase table size 256
+history table size 256

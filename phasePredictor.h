@@ -162,9 +162,9 @@ private:
 	uint32_t hstSize;
 
 	/* history registers */
-	uint32_t histReg;
+	uint32_t * histReg;
 	uint32_t histReuse;
-	//std::deque<uint32_t> lastIds;
+	std::deque<uint32_t> lastIds;
 
 	/* prediction out come */
 	uint32_t predOutCome;
@@ -172,7 +172,7 @@ private:
 public:
 	uint32_t misPredicts;
 
-	Predictor() : hstSize(0), histReg(0), histReuse(0), predOutCome(0), misPredicts(0) {};
+	Predictor() : hstSize(0), histReg(nullptr), histReuse(0), predOutCome(0), misPredicts(0) {};
 
 	~Predictor();
 

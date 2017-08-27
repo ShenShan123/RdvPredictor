@@ -245,23 +245,31 @@ PhaseTable::Entry * PhaseTable::find(const Histogram<> & rdv)
     }
 }
 
+#define HLENGTH 12
+
 Predictor::~Predictor()
 {
-    for (uint32_t i = 0; i < hstSize; ++i)
-        delete [] hst[i];
+    delete [] histReg;
 
+    for (uint32_t i = 0; i < HLENGTH; ++i)
+        delete [] hst[i];
     delete [] hst;
 }
 
 void Predictor::init(uint32_t s)
 {
     hstSize = s;
-    hst = new uint32_t * [hstSize];
-    for (uint32_t i = 0; i < hstSize; ++i)
-        hst[i] = new uint32_t [hstSize];
+    histReg = new uint32_t[HLENGTH];
 
-    for (uint32_t i = 0; i < hstSize; ++i)
-        for (uint32_t j = 0; j < hstSize; ++j)
+    for (uint32_t i = 0; i < HLENGTH; ++i)
+        histReg[i] = 0;
+    
+    hst = new uint32_t * [HLENGTH];
+    for (uint32_t j = 0; j < HLENGTH; ++j)
+        hst[j] = new uint32_t[hstSize];
+
+    for (uint32_t i = 0; i < HLENGTH; ++i)
+        for (uint32_t j = 0; j < HLENGTH; ++j)
             hst[i][j] = 0;
 }
 
@@ -269,19 +277,32 @@ uint32_t Predictor::predict(PhaseTable::Entry * ent)
 {
     uint32_t id = ent->getId();
     
-    //lastIds.push_back(id);
-    //if (lastIds.size() > 2)
-      //  lastIds.pop_front();
+    lastIds.push_back(id);
+    if (lastIds.size() > HLENGTH)
+        lastIds.pop_front();
     
     /* update the history table */
     //hst[histReg & (hstSize - 1)][histReuse & (hstSize - 1)] = id;
-    hst[histReg & (hstSize - 1)][0] = id;
+    hst[histReuse][histReg[histReuse] & (hstSize - 1)] = id;
     misPredicts += id != predOutCome;
 
     /* update history registers */
-    //histReg = lastIds[0] ^ lastIds[1];
+    for(int i = 1; i < HLENGTH; ++i)
+        histReg[HLENGTH - i] = histReg[HLENGTH - i] ^ lastIds[i - 1] ^ id;
+    /* infinite length history register */
+    histReg[0] ^= id;
+
     histReuse = ent->getReuse();
-    histReg = id ^ histReuse;
+    if (!histReuse) {
+        auto it = lastIds.end();
+        it = lastIds.size() > 1 ? it - 2 : lastIds.begin();
+        predOutCome = *it;
+        return predOutCome;
+    }
+
+    /* the reuse distance longer than HLENGTH - 1, 
+       we set the reuse distance to 0, use the infinite history */
+    histReuse = histReuse > HLENGTH - 1 ? 0 : histReuse;
 
     /* clear the reuse counter of this entry */
     ent->clearReuse();
@@ -289,12 +310,12 @@ uint32_t Predictor::predict(PhaseTable::Entry * ent)
 
     /* do prediction from history table */
     //predOutCome = hst[histReg & (hstSize - 1)][histReuse & (hstSize - 1)];
-    predOutCome = hst[histReg & (hstSize - 1)][0];
+    predOutCome = hst[histReuse][histReg[histReuse] & (hstSize - 1)];
     
     /* if the history table entry is empty, then predict this phase as the next */
     if (!predOutCome) {
-        std::cout << "no entry matched!\n";
-        predOutCome = histReg;
+        std::cout << "empty entry!\n";
+        predOutCome = id;
     }
     
     return predOutCome;

@@ -1,0 +1,3 @@
+miss-prediction rate: 0.555556
+miss-prediction new phase: 0.333333
+miss-prediction empty entry: 0.333333

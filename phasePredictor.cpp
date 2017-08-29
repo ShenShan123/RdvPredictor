@@ -245,30 +245,24 @@ PhaseTable::Entry * PhaseTable::find(const Histogram<> & rdv)
     }
 }
 
-#define HLENGTH 12
-
 Predictor::~Predictor()
 {
-    delete [] histReg;
 
-    for (uint32_t i = 0; i < HLENGTH; ++i)
+    for (uint32_t i = 0; i < hstSize; ++i)
         delete [] hst[i];
     delete [] hst;
 }
 
+#define HLENGTH 12
+
 void Predictor::init(uint32_t s)
 {
     hstSize = s;
-    histReg = new uint32_t[HLENGTH];
+    hst = new uint32_t * [hstSize];
+    for (uint32_t j = 0; j < hstSize; ++j)
+        hst[j] = new uint32_t[HLENGTH];
 
-    for (uint32_t i = 0; i < HLENGTH; ++i)
-        histReg[i] = 0;
-    
-    hst = new uint32_t * [HLENGTH];
-    for (uint32_t j = 0; j < HLENGTH; ++j)
-        hst[j] = new uint32_t[hstSize];
-
-    for (uint32_t i = 0; i < HLENGTH; ++i)
+    for (uint32_t i = 0; i < hstSize; ++i)
         for (uint32_t j = 0; j < HLENGTH; ++j)
             hst[i][j] = 0;
 }
@@ -277,45 +271,40 @@ uint32_t Predictor::predict(PhaseTable::Entry * ent)
 {
     uint32_t id = ent->getId();
     
-    lastIds.push_back(id);
+    /* history id queue */
+    lastIds.push_front(id);
     if (lastIds.size() > HLENGTH)
-        lastIds.pop_front();
+        lastIds.pop_back();
     
     /* update the history table */
-    //hst[histReg & (hstSize - 1)][histReuse & (hstSize - 1)] = id;
-    hst[histReuse][histReg[histReuse] & (hstSize - 1)] = id;
+    hst[histReg & (hstSize - 1)][histReuse] = id;
+
+    /* update the # of mispredictions */    
     misPredicts += id != predOutCome;
+    misDueToEmp += id != predOutCome ? emptyEntry : 0;
+    misDueToNew += id != predOutCome ? newPhase : 0;
 
-    /* update history registers */
-    for(int i = 1; i < HLENGTH; ++i)
-        histReg[HLENGTH - i] = histReg[HLENGTH - i] ^ lastIds[i - 1] ^ id;
-    /* infinite length history register */
-    histReg[0] ^= id;
-
-    histReuse = ent->getReuse();
-    if (!histReuse) {
-        auto it = lastIds.end();
-        it = lastIds.size() > 1 ? it - 2 : lastIds.begin();
-        predOutCome = *it;
-        return predOutCome;
-    }
-
-    /* the reuse distance longer than HLENGTH - 1, 
-       we set the reuse distance to 0, use the infinite history */
-    histReuse = histReuse > HLENGTH - 1 ? 0 : histReuse;
-
+    emptyEntry = false;
+    newPhase = false;
+    /* histReuse max is HLENGTH - 1 */
+    histReuse = ent->getReuse() > HLENGTH - 1 ? HLENGTH - 1 : ent->getReuse();
+    std::cout << "reuse counter " << ent->getReuse() << std::endl;
+    /* 0 reuse suggests this is a new phase */
+    newPhase = !histReuse;
+    /* update history register */
+    histReg = id;
     /* clear the reuse counter of this entry */
     ent->clearReuse();
     //std::cout << "histReg index " << (histReg & (hstSize - 1)) << std::endl;
 
     /* do prediction from history table */
-    //predOutCome = hst[histReg & (hstSize - 1)][histReuse & (hstSize - 1)];
-    predOutCome = hst[histReuse][histReg[histReuse] & (hstSize - 1)];
+    predOutCome = hst[histReg & (hstSize - 1)][histReuse];
     
     /* if the history table entry is empty, then predict this phase as the next */
     if (!predOutCome) {
         std::cout << "empty entry!\n";
         predOutCome = id;
+        emptyEntry = true;
     }
     
     return predOutCome;
@@ -340,18 +329,20 @@ RecordMemRefs(ADDRINT ea)
 
         uint32_t predId = predictor.predict(entry);
         std::cout << "predicted phase id is: " << predId << std::endl;
-        //std::cout << "mis-predictions " << predictor.misPredicts << std::endl;
-
+        
         //currRDD.print(fout);
         currRDD.clear();
+        std::cout << "miss-prediction rate: " << (double)predictor.misPredicts / NumIntervals << std::endl;
         std::cout << "==== " << NumIntervals << "th interval ====" << std::endl;
     }
 
     /* if we got a maximum memory references, just exit this program */
+    /*
     if (NumIntervals >= 5000) {
         Fini(0);
         exit(0);
     }
+    */
 }
 
 /*
@@ -395,8 +386,11 @@ VOID Fini(INT32 code, VOID *v)
     std::cout << "miss-prediction rate " << (double)predictor.misPredicts / NumIntervals << std::endl;
     ++NumIntervals;
 
-    fout << "miss-prediction rate: " << (double)predictor.misPredicts / NumIntervals << std::endl;
-    fout << "\nthreshold " << (double)KnobRdvThreshold.Value() / 100 << "\nphase table size " \
+    fout << "miss-prediction rate: " << (double)predictor.misPredicts / NumIntervals << "\nmiss-prediction new phase: " \
+    << (double)predictor.misDueToNew / NumIntervals << "\nmiss-prediction empty entry: " \
+    << (double)predictor.misDueToEmp / NumIntervals << std::endl;
+    
+    std::cout << "\nthreshold " << (double)KnobRdvThreshold.Value() / 100 << "\nphase table size " \
     << KnobPhaseTableSize.Value() << "\nhistory table size " << KnobHistoryTableSize.Value() << std::endl;
 
     std::cout << "phase table size " << phaseTable.size() << std::endl;
